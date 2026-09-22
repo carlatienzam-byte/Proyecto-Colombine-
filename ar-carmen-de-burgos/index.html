@@ -25,10 +25,11 @@
       --suave: rgba(15, 62, 87, .78);
     }
     * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-    /* El fondo va SOLO en <html>: si <body> tuviera fondo, taparía el vídeo de la cámara (MindAR lo coloca con z-index negativo) */
-    html { background: #000; }
-    html, body { margin: 0; height: 100%; overflow: hidden; font-family: Inter, system-ui, sans-serif; color: var(--tinta); }
-    body { background: transparent; }
+    /* Sin fondos opacos en html/body: en algunos móviles tapaban el vídeo de la cámara.
+       El orden de capas se fija explícitamente: vídeo (0) < escena 3D (1) < interfaz (10+) */
+    html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; font-family: Inter, system-ui, sans-serif; color: var(--tinta); }
+    video.camara-ar { position: absolute !important; z-index: 0 !important; object-fit: cover; }
+    .a-canvas { z-index: 1 !important; background: transparent !important; }
     button { font: inherit; cursor: pointer; }
     .oculto { display: none !important; }
 
@@ -81,7 +82,7 @@
     @keyframes barrido { 0%, 100% { top: 4%; } 50% { top: 94%; } }
 
     /* ---------- Cargando ---------- */
-    #cargando { position: fixed; inset: 0; z-index: 25; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.55); color: #fff; flex-direction: column; gap: 14px; }
+    #cargando { position: fixed; inset: 0; z-index: 25; display: flex; align-items: center; justify-content: center; background: #111; color: #fff; flex-direction: column; gap: 14px; }
     .spinner { width: 42px; height: 42px; border: 4px solid rgba(255,255,255,.3); border-top-color: #fff; border-radius: 50%; animation: gira 0.9s linear infinite; }
     @keyframes gira { to { transform: rotate(360deg); } }
 
@@ -245,6 +246,8 @@
   <div id="ayuda-gestos" class="pastilla oculto">Un dedo: girar · Dos dedos: tamaño</div>
   <div id="aviso" class="pastilla oculto"></div>
   <div id="foto-flash"></div>
+  <button id="btn-reactivar" class="btn-principal oculto" style="position:fixed;z-index:20;left:50%;top:50%;transform:translate(-50%,-50%)">Toca para activar la cámara</button>
+  <pre id="diagnostico" class="oculto" style="position:fixed;z-index:60;left:8px;top:8px;margin:0;padding:8px;max-width:70vw;background:rgba(0,0,0,.75);color:#9f9;font:11px/1.4 monospace;white-space:pre-wrap;pointer-events:none"></pre>
 
   <button id="btn-info" class="oculto" aria-label="Sobre Carmen de Burgos">i</button>
 
@@ -353,6 +356,9 @@
     }
 
     // --- Comprobaciones previas ---
+    if (/Instagram|FBAN|FBAV|WhatsApp|Line\/|MicroMessenger|TikTok/i.test(navigator.userAgent)) {
+      aviso('Estás en el navegador de otra app. Ábrelo en Chrome o Safari (menú ⋮ → «Abrir en el navegador») para usar la cámara.', 10000);
+    }
     if (!window.isSecureContext) {
       ui.comenzar.textContent = 'Necesita https';
       aviso('La cámara solo funciona desde una dirección https (por ejemplo, GitHub Pages).', 8000);
@@ -370,13 +376,59 @@
       ui.comenzar.disabled = true;
       ui.inicio.classList.add('oculto');
       ui.cargando.classList.remove('oculto');
+      const obs = new MutationObserver(() => { if (prepararVideo()) obs.disconnect(); });
+      obs.observe(document.body, { childList: true });
       try {
         await escena.systems['mindar-image-system'].start();
       } catch (e) {
         console.error(e);
       }
     });
+    // --- Vídeo de la cámara: MindAR lo crea al arrancar; lo preparamos para móviles ---
+    const videoAR = () => document.querySelector('body > video');
+    function prepararVideo() {
+      const v = videoAR(); if (!v) return null;
+      v.classList.add('camara-ar');
+      v.muted = true; v.playsInline = true; v.setAttribute('playsinline', ''); v.setAttribute('webkit-playsinline', '');
+      if (v.paused) v.play().catch(() => ui.reactivar.classList.remove('oculto'));
+      return v;
+    }
+    ui.reactivar = $('#btn-reactivar');
+    ui.reactivar.addEventListener('click', () => {
+      const v = videoAR(); if (!v) return;
+      v.play().then(() => ui.reactivar.classList.add('oculto')).catch(() => aviso('No se pudo reanudar la cámara. Recarga la página.', 5000));
+    });
+    // Vigilancia: si el vídeo está pausado o no avanza, ofrecemos reactivarlo
+    let ultimoTiempo = -1, congelado = 0, arListo = false;
+    setInterval(() => {
+      const v = videoAR();
+      if (!v || !arListo || document.hidden) return;
+      if (v.paused || v.currentTime === ultimoTiempo) congelado++; else congelado = 0;
+      ultimoTiempo = v.currentTime;
+      if (congelado >= 2) { v.play().catch(() => {}); ui.reactivar.classList.remove('oculto'); }
+      else ui.reactivar.classList.add('oculto');
+    }, 1000);
+
+    // Diagnóstico: añade ?debug=1 a la dirección para ver el estado de la cámara en pantalla
+    if (new URLSearchParams(location.search).has('debug')) {
+      const d = $('#diagnostico'); d.classList.remove('oculto');
+      setInterval(() => {
+        const v = videoAR(), c = escena.canvas;
+        const r = v ? v.getBoundingClientRect() : null;
+        const pila = v ? document.elementsFromPoint(innerWidth / 2, innerHeight / 3).slice(0, 4).map(e => e.tagName.toLowerCase() + (e.id ? '#' + e.id : '') + (e.className && typeof e.className === 'string' ? '.' + e.className.split(' ')[0] : '')).join(' > ') : '-';
+        d.textContent = [
+          'navegador: ' + navigator.userAgent.slice(0, 110),
+          'vídeo: ' + (v ? `${v.videoWidth}x${v.videoHeight} · readyState ${v.readyState} · ${v.paused ? 'PAUSADO' : 'reproduciendo'} · t=${v.currentTime.toFixed(1)}` : 'no creado'),
+          'vídeo en pantalla: ' + (r ? `${Math.round(r.width)}x${Math.round(r.height)} en (${Math.round(r.left)},${Math.round(r.top)}) · z ${getComputedStyle(v).zIndex}` : '-'),
+          'lienzo 3D: z ' + (c ? getComputedStyle(c).zIndex : '-'),
+          'pila en el centro: ' + pila
+        ].join('\n');
+      }, 700);
+    }
+
     escena.addEventListener('arReady', () => {
+      arListo = true;
+      prepararVideo();
       ui.cargando.classList.add('oculto');
       ui.escaneo.classList.remove('oculto');
       ui.barra.classList.remove('oculto');
