@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#0f3e57">
+  <title>Carmen de Burgos · Realidad Aumentada</title>
+  <meta name="description" content="Apunta al logotipo del IES Carmen de Burgos Seguí y descubre a Colombine en realidad aumentada.">
+  <link rel="icon" href="assets/logo.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+
+  <!-- A-Frame 1.5.0 + MindAR 1.2.5 (combinación probada y documentada por MindAR) -->
+  <script src="https://cdn.jsdelivr.net/npm/aframe@1.5.0/dist/aframe-v1.5.0.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
+
+  <style>
+    :root {
+      --azul: #135b80;
+      --azul-osc: #0f3e57;
+      --rojo: #962b36;
+      --papel: #faf7f2;
+      --tinta: #1d2329;
+      --suave: rgba(15, 62, 87, .78);
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    /* El fondo va SOLO en <html>: si <body> tuviera fondo, taparía el vídeo de la cámara (MindAR lo coloca con z-index negativo) */
+    html { background: #000; }
+    html, body { margin: 0; height: 100%; overflow: hidden; font-family: Inter, system-ui, sans-serif; color: var(--tinta); }
+    body { background: transparent; }
+    button { font: inherit; cursor: pointer; }
+    .oculto { display: none !important; }
+
+    /* ---------- Pantalla de inicio ---------- */
+    #inicio {
+      position: fixed; inset: 0; z-index: 30; background: var(--papel);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      padding: max(24px, env(safe-area-inset-top)) 24px max(24px, env(safe-area-inset-bottom));
+      text-align: center; overflow-y: auto;
+    }
+    #inicio img { width: min(42vw, 170px); height: auto; margin-bottom: 18px; }
+    #inicio h1 { font-family: "DM Serif Display", Georgia, serif; font-weight: 400; color: var(--azul-osc); font-size: clamp(28px, 7vw, 40px); margin: 0 0 4px; line-height: 1.1; }
+    #inicio .sub { color: var(--rojo); font-weight: 600; letter-spacing: .08em; text-transform: uppercase; font-size: 12px; margin: 0 0 22px; }
+    #inicio ol { text-align: left; max-width: 340px; margin: 0 0 26px; padding-left: 22px; line-height: 1.5; font-size: 15px; }
+    #inicio li { margin-bottom: 6px; }
+    .btn-principal {
+      background: var(--azul); color: #fff; border: 0; border-radius: 999px;
+      padding: 15px 34px; font-size: 17px; font-weight: 600; box-shadow: 0 6px 18px rgba(19, 91, 128, .35);
+    }
+    .btn-principal:active { transform: scale(.97); }
+    .btn-principal[disabled] { opacity: .6; }
+    #inicio .nota { font-size: 12px; color: #6a737b; margin-top: 18px; max-width: 320px; }
+
+    /* ---------- Guía de escaneo ---------- */
+    #escaneo {
+      position: fixed; inset: 0; z-index: 10; pointer-events: none;
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px;
+    }
+    #escaneo .marco {
+      width: min(52vw, 230px); aspect-ratio: 1161 / 1973; position: relative;
+    }
+    #escaneo .fantasma { position: absolute; inset: 0; background: url(assets/logo.png) center / contain no-repeat; border-radius: 10px; opacity: .4; animation: latido 1.8s ease-in-out infinite; }
+    /* Esquinas del visor dibujadas con 8 degradados (sin imágenes) */
+    #escaneo .marco::before {
+      content: ""; position: absolute; inset: -12px;
+      --l: 34px; --g: 4px;
+      background:
+        linear-gradient(#fff, #fff) left top / var(--l) var(--g) no-repeat,
+        linear-gradient(#fff, #fff) left top / var(--g) var(--l) no-repeat,
+        linear-gradient(#fff, #fff) right top / var(--l) var(--g) no-repeat,
+        linear-gradient(#fff, #fff) right top / var(--g) var(--l) no-repeat,
+        linear-gradient(#fff, #fff) left bottom / var(--l) var(--g) no-repeat,
+        linear-gradient(#fff, #fff) left bottom / var(--g) var(--l) no-repeat,
+        linear-gradient(#fff, #fff) right bottom / var(--l) var(--g) no-repeat,
+        linear-gradient(#fff, #fff) right bottom / var(--g) var(--l) no-repeat;
+    }
+    #escaneo .linea { position: absolute; left: 6%; right: 6%; height: 2px; background: #fff; box-shadow: 0 0 12px #fff; animation: barrido 2.2s ease-in-out infinite; }
+    .pastilla { background: var(--suave); color: #fff; padding: 10px 18px; border-radius: 999px; font-size: 15px; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+    @keyframes latido { 50% { opacity: .7; transform: scale(1.02); } }
+    @keyframes barrido { 0%, 100% { top: 4%; } 50% { top: 94%; } }
+
+    /* ---------- Cargando ---------- */
+    #cargando { position: fixed; inset: 0; z-index: 25; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.55); color: #fff; flex-direction: column; gap: 14px; }
+    .spinner { width: 42px; height: 42px; border: 4px solid rgba(255,255,255,.3); border-top-color: #fff; border-radius: 50%; animation: gira 0.9s linear infinite; }
+    @keyframes gira { to { transform: rotate(360deg); } }
+
+    /* ---------- Barra de herramientas ---------- */
+    #barra {
+      position: fixed; z-index: 15; left: 50%; transform: translateX(-50%);
+      bottom: max(18px, env(safe-area-inset-bottom)); display: flex; gap: 10px;
+      background: var(--suave); padding: 8px; border-radius: 999px;
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    }
+    #barra button {
+      width: 50px; height: 50px; border-radius: 50%; border: 0; background: rgba(255,255,255,.14); color: #fff;
+      display: flex; align-items: center; justify-content: center; position: relative;
+    }
+    #barra button.activo { background: #fff; color: var(--azul-osc); }
+    #barra button:active { transform: scale(.94); }
+    #barra svg { width: 24px; height: 24px; }
+    #barra button span { position: absolute; bottom: -20px; font-size: 10px; color: #fff; white-space: nowrap; text-shadow: 0 1px 3px #000; }
+
+    #ayuda-gestos { position: fixed; z-index: 14; left: 50%; transform: translateX(-50%); bottom: calc(max(18px, env(safe-area-inset-bottom)) + 92px); transition: opacity .5s; font-size: 13px; text-align: center; white-space: nowrap; }
+
+    /* ---------- Paneles (info y foto) ---------- */
+    .panel-fondo { position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,.6); display: flex; align-items: flex-end; justify-content: center; }
+    .panel {
+      background: var(--papel); width: 100%; max-width: 520px; max-height: 86vh; overflow-y: auto;
+      border-radius: 20px 20px 0 0; padding: 22px 22px max(22px, env(safe-area-inset-bottom));
+      animation: sube .3s ease-out;
+    }
+    @keyframes sube { from { transform: translateY(40px); opacity: 0; } }
+    .panel h2 { font-family: "DM Serif Display", Georgia, serif; font-weight: 400; color: var(--azul-osc); margin: 0 0 2px; font-size: 26px; }
+    .panel .fechas { color: var(--rojo); font-weight: 600; font-size: 13px; margin: 0 0 12px; }
+    .panel p { line-height: 1.55; font-size: 15px; margin: 0 0 12px; }
+    .panel .acciones { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+    .btn-sec { border: 2px solid var(--azul); color: var(--azul); background: transparent; border-radius: 999px; padding: 10px 20px; font-weight: 600; text-decoration: none; font-size: 15px; }
+    .btn-lleno { background: var(--azul); color: #fff; border: 2px solid var(--azul); border-radius: 999px; padding: 10px 20px; font-weight: 600; text-decoration: none; font-size: 15px; }
+    #foto-img { width: 100%; max-height: 58vh; object-fit: contain; background: #000; border-radius: 12px; display: block; margin-bottom: 12px; }
+    #foto-flash { position: fixed; inset: 0; background: #fff; z-index: 45; opacity: 0; pointer-events: none; transition: opacity .35s; }
+
+    #btn-info { position: fixed; z-index: 15; top: max(14px, env(safe-area-inset-top)); right: 14px; width: 44px; height: 44px; border-radius: 50%; border: 0; background: var(--suave); color: #fff; font-family: "DM Serif Display", Georgia, serif; font-size: 22px; }
+    #aviso { position: fixed; z-index: 50; top: max(14px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); max-width: 90vw; text-align: center; transition: opacity .4s; }
+
+    /* MindAR añade su propio vídeo y overlays: aseguramos que queden detrás */
+    .mindar-ui-overlay { z-index: 5 !important; }
+  </style>
+
+  <script>
+    /* =====================================================================
+       Componentes (registrados en <head>, ANTES de <a-scene>)
+       ===================================================================== */
+
+    // Gestos táctiles: 1 dedo = girar, 2 dedos = escalar (pinza) y girar
+    AFRAME.registerComponent('gestos', {
+      schema: { escalaMin: { default: 0.4 }, escalaMax: { default: 2.5 } },
+      init() {
+        this.escala = 1; this.rotY = 0;
+        this.t = { modo: null };
+        const zonaUI = e => e.target.closest && e.target.closest('button, .panel-fondo, #inicio, a');
+        this.onStart = e => {
+          if (zonaUI(e)) return;
+          const ts = e.touches;
+          if (ts.length === 1) this.t = { modo: 'girar', x: ts[0].clientX, rot0: this.rotY };
+          else if (ts.length >= 2) {
+            const d = this.dist(ts), a = this.ang(ts);
+            this.t = { modo: 'pinza', d0: d, a0: a, esc0: this.escala, rot0: this.rotY };
+          }
+        };
+        this.onMove = e => {
+          if (!this.t.modo || zonaUI(e)) return;
+          const ts = e.touches;
+          if (this.t.modo === 'girar' && ts.length === 1) {
+            this.rotY = this.t.rot0 + (ts[0].clientX - this.t.x) * 0.6;
+          } else if (this.t.modo === 'pinza' && ts.length >= 2) {
+            this.escala = THREE.MathUtils.clamp(this.t.esc0 * this.dist(ts) / this.t.d0, this.data.escalaMin, this.data.escalaMax);
+            this.rotY = this.t.rot0 - (this.ang(ts) - this.t.a0);
+          }
+          this.aplicar();
+          this.el.emit('gesto');
+        };
+        this.onEnd = e => {
+          if (e.touches.length === 0) this.t = { modo: null };
+          else if (e.touches.length === 1) this.t = { modo: 'girar', x: e.touches[0].clientX, rot0: this.rotY };
+        };
+        window.addEventListener('touchstart', this.onStart, { passive: true });
+        window.addEventListener('touchmove', this.onMove, { passive: true });
+        window.addEventListener('touchend', this.onEnd, { passive: true });
+        window.addEventListener('touchcancel', this.onEnd, { passive: true });
+        // Ratón (para probar en ordenador): arrastrar = girar, rueda = escalar
+        this.onDown = e => { if (!zonaUI(e)) this.t = { modo: 'raton', x: e.clientX, rot0: this.rotY }; };
+        this.onMouseMove = e => { if (this.t.modo === 'raton') { this.rotY = this.t.rot0 + (e.clientX - this.t.x) * 0.6; this.aplicar(); } };
+        this.onUp = () => { if (this.t.modo === 'raton') this.t = { modo: null }; };
+        this.onWheel = e => { this.escala = THREE.MathUtils.clamp(this.escala * (e.deltaY < 0 ? 1.08 : 0.92), this.data.escalaMin, this.data.escalaMax); this.aplicar(); };
+        window.addEventListener('mousedown', this.onDown);
+        window.addEventListener('mousemove', this.onMouseMove);
+        window.addEventListener('mouseup', this.onUp);
+        window.addEventListener('wheel', this.onWheel, { passive: true });
+      },
+      dist(ts) { return Math.hypot(ts[0].clientX - ts[1].clientX, ts[0].clientY - ts[1].clientY) || 1; },
+      ang(ts) { return Math.atan2(ts[1].clientY - ts[0].clientY, ts[1].clientX - ts[0].clientX) * 180 / Math.PI; },
+      aplicar() {
+        this.el.object3D.scale.setScalar(this.escala);
+        this.el.object3D.rotation.y = THREE.MathUtils.degToRad(this.rotY);
+      },
+      reiniciar() { this.escala = 1; this.rotY = 0; this.aplicar(); },
+      remove() {
+        ['touchstart', 'touchmove', 'touchend', 'touchcancel'].forEach(ev => window.removeEventListener(ev, ev === 'touchstart' ? this.onStart : ev === 'touchmove' ? this.onMove : this.onEnd));
+        window.removeEventListener('mousedown', this.onDown); window.removeEventListener('mousemove', this.onMouseMove);
+        window.removeEventListener('mouseup', this.onUp); window.removeEventListener('wheel', this.onWheel);
+      }
+    });
+
+    // Rotación automática tipo "peana giratoria", activable desde la barra
+    AFRAME.registerComponent('peana', {
+      schema: { activa: { default: false }, velocidad: { default: 25 } }, // grados/segundo
+      tick(t, dt) {
+        if (!this.data.activa || !dt) return;
+        this.el.object3D.rotation.y += THREE.MathUtils.degToRad(this.data.velocidad) * dt / 1000;
+      }
+    });
+
+    // Sombra suave (textura radial generada en canvas, sin archivos extra)
+    AFRAME.registerComponent('sombra-suave', {
+      init() {
+        const c = document.createElement('canvas'); c.width = c.height = 128;
+        const g = c.getContext('2d'), grad = g.createRadialGradient(64, 64, 4, 64, 64, 62);
+        grad.addColorStop(0, 'rgba(0,0,0,0.55)'); grad.addColorStop(0.6, 'rgba(0,0,0,0.25)'); grad.addColorStop(1, 'rgba(0,0,0,0)');
+        g.fillStyle = grad; g.fillRect(0, 0, 128, 128);
+        const tex = new THREE.CanvasTexture(c);
+        const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false }));
+        mesh.rotation.x = -Math.PI / 2;
+        this.el.setObject3D('mesh', mesh);
+      }
+    });
+  </script>
+</head>
+
+<body>
+  <!-- ================= Pantalla de inicio ================= -->
+  <section id="inicio">
+    <img src="assets/logo.png" alt="Logotipo del IES Carmen de Burgos Seguí">
+    <h1>Carmen de Burgos</h1>
+    <p class="sub">Realidad aumentada · IES Carmen de Burgos Seguí</p>
+    <ol>
+      <li>Ten a mano el <strong>logotipo del instituto</strong> (impreso, en un cartel o en otra pantalla).</li>
+      <li>Pulsa <strong>Comenzar</strong> y permite el acceso a la cámara.</li>
+      <li>Apunta al logotipo y aparecerá Carmen de Burgos. Arrastra con un dedo para girarla y usa dos dedos para cambiar su tamaño.</li>
+    </ol>
+    <button id="btn-comenzar" class="btn-principal" disabled>Cargando…</button>
+    <p class="nota">Funciona en Android (Chrome) y en iPhone/iPad (Safari). Necesita conexión segura (https) y permiso de cámara.</p>
+  </section>
+
+  <div id="cargando" class="oculto"><div class="spinner"></div><div>Activando la cámara…</div></div>
+
+  <!-- ================= Guía de escaneo ================= -->
+  <div id="escaneo" class="oculto">
+    <div class="marco"><div class="fantasma"></div><div class="linea"></div></div>
+    <div class="pastilla">Apunta al logotipo del instituto</div>
+  </div>
+
+  <div id="ayuda-gestos" class="pastilla oculto">Un dedo: girar · Dos dedos: tamaño</div>
+  <div id="aviso" class="pastilla oculto"></div>
+  <div id="foto-flash"></div>
+
+  <button id="btn-info" class="oculto" aria-label="Sobre Carmen de Burgos">i</button>
+
+  <!-- ================= Barra de herramientas ================= -->
+  <nav id="barra" class="oculto" aria-label="Controles">
+    <button id="btn-modo" aria-label="Cambiar entre mesa y pared" title="Mesa / Pared">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path id="icono-modo" d="M2 18l5-8h15l-5 8z"/></svg>
+      <span id="txt-modo">Mesa</span>
+    </button>
+    <button id="btn-girar" aria-label="Giro automático" title="Giro automático">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></svg>
+      <span>Girar</span>
+    </button>
+    <button id="btn-foto" aria-label="Hacer foto" title="Hacer foto">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>
+      <span>Foto</span>
+    </button>
+    <button id="btn-reset" aria-label="Restablecer tamaño y giro" title="Restablecer">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 3v6h6"/></svg>
+      <span>Reiniciar</span>
+    </button>
+  </nav>
+
+  <!-- ================= Panel informativo ================= -->
+  <div id="panel-info" class="panel-fondo oculto">
+    <div class="panel" role="dialog" aria-labelledby="titulo-info">
+      <h2 id="titulo-info">Carmen de Burgos Seguí</h2>
+      <p class="fechas">«Colombine» · Almería, 1867 – Madrid, 1932</p>
+      <p>Escritora, periodista, traductora y maestra. Fue una de las primeras mujeres que se dedicaron profesionalmente al periodismo en España y cubrió como corresponsal la guerra de Melilla de 1909.</p>
+      <p>Firmó muchos de sus artículos como <em>Colombine</em> y defendió con su obra el derecho al divorcio, el sufragio femenino y la educación de las mujeres. Nuestro instituto lleva su nombre.</p>
+      <div class="acciones"><button class="btn-lleno" data-cerrar>Volver a la experiencia</button></div>
+    </div>
+  </div>
+
+  <!-- ================= Panel de foto ================= -->
+  <div id="panel-foto" class="panel-fondo oculto">
+    <div class="panel" role="dialog" aria-label="Tu foto">
+      <img id="foto-img" alt="Captura de la experiencia de realidad aumentada">
+      <div class="acciones">
+        <a id="foto-descargar" class="btn-lleno" download="carmen-de-burgos-RA.jpg">Guardar</a>
+        <button id="foto-compartir" class="btn-sec oculto">Compartir</button>
+        <button class="btn-sec" data-cerrar>Cerrar</button>
+      </div>
+      <p style="font-size:12px;color:#6a737b;margin-top:12px">En iPhone también puedes mantener pulsada la imagen y elegir «Guardar en Fotos».</p>
+    </div>
+  </div>
+
+  <!-- ================= Escena AR ================= -->
+  <a-scene
+    mindar-image="imageTargetSrc: assets/targets.mind; autoStart: false; maxTrack: 1; uiLoading: no; uiScanning: no; uiError: yes; filterMinCF: 0.0001; filterBeta: 0.01; warmupTolerance: 2; missTolerance: 8"
+    color-space="sRGB"
+    renderer="colorManagement: true; antialias: false; physicallyCorrectLights: false; maxCanvasWidth: 1600; maxCanvasHeight: 1600"
+    gltf-model="dracoDecoderPath: assets/draco/"
+    vr-mode-ui="enabled: false"
+    device-orientation-permission-ui="enabled: false"
+    loading-screen="enabled: false">
+
+    <a-assets timeout="30000">
+      <a-asset-item id="modelo-carmen" src="assets/carmen-burgos.glb"></a-asset-item>
+    </a-assets>
+
+    <a-camera position="0 0 0" look-controls="enabled: false" cursor="rayOrigin: mouse" raycaster="objects: .clickable"></a-camera>
+
+    <!-- Iluminación ligera: 1 hemisférica + 1 direccional, sin sombras dinámicas -->
+    <a-entity light="type: hemisphere; color: #ffffff; groundColor: #6b5d52; intensity: 1.1"></a-entity>
+    <a-entity light="type: directional; color: #fff6ea; intensity: 1.3" position="0.6 1 1.4"></a-entity>
+
+    <!--
+      Sistema de coordenadas del marcador (MindAR): ancho del logotipo = 1 unidad,
+      X a la derecha, Y hacia arriba del logo, Z saliendo del papel hacia la cámara.
+      #pivote coloca el busto según el modo (mesa o pared).
+    -->
+    <a-entity id="objetivo" mindar-image-target="targetIndex: 0">
+      <a-entity id="pivote" rotation="90 0 0" position="0 -0.35 0">
+        <a-entity id="gestos" gestos>
+          <a-entity id="sombra" sombra-suave scale="0.75 0.75 0.75" position="0 0.002 0"></a-entity>
+          <a-entity id="peana" peana>
+            <a-entity id="aparicion" scale="0.001 0.001 0.001">
+              <!-- El GLB mide ~1,9 u de alto con el origen en su centro: escalado a 0,45 (≈ media altura del logo) y elevado 0,95×0,45 para que la base toque el papel -->
+              <a-entity id="carmen" gltf-model="#modelo-carmen" scale="0.45 0.45 0.45" position="0 0.428 0"></a-entity>
+            </a-entity>
+          </a-entity>
+        </a-entity>
+      </a-entity>
+    </a-entity>
+  </a-scene>
+
+  <script>
+    /* =====================================================================
+       Lógica de la interfaz
+       ===================================================================== */
+    const $ = s => document.querySelector(s);
+    const escena = $('a-scene');
+    const ui = {
+      inicio: $('#inicio'), comenzar: $('#btn-comenzar'), cargando: $('#cargando'), escaneo: $('#escaneo'),
+      barra: $('#barra'), info: $('#btn-info'), ayuda: $('#ayuda-gestos'), aviso: $('#aviso')
+    };
+    const pivote = $('#pivote'), gestosEl = $('#gestos'), peanaEl = $('#peana'), aparicion = $('#aparicion'), sombra = $('#sombra');
+
+    const guardar = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
+    const leer = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+
+    function aviso(texto, ms = 3500) {
+      ui.aviso.textContent = texto; ui.aviso.classList.remove('oculto'); ui.aviso.style.opacity = 1;
+      clearTimeout(aviso.t); aviso.t = setTimeout(() => { ui.aviso.style.opacity = 0; setTimeout(() => ui.aviso.classList.add('oculto'), 400); }, ms);
+    }
+
+    // --- Comprobaciones previas ---
+    if (!window.isSecureContext) {
+      ui.comenzar.textContent = 'Necesita https';
+      aviso('La cámara solo funciona desde una dirección https (por ejemplo, GitHub Pages).', 8000);
+    }
+
+    // --- Modelo cargado: habilitamos el botón ---
+    let modeloListo = false, escenaLista = false;
+    const habilitar = () => { if (modeloListo && escenaLista && window.isSecureContext) { ui.comenzar.disabled = false; ui.comenzar.textContent = 'Comenzar'; } };
+    $('#carmen').addEventListener('model-loaded', () => { modeloListo = true; habilitar(); });
+    $('#carmen').addEventListener('model-error', () => { ui.comenzar.textContent = 'Error al cargar el modelo'; });
+    if (escena.hasLoaded) { escenaLista = true; } else { escena.addEventListener('loaded', () => { escenaLista = true; habilitar(); }); }
+
+    // --- Arranque de la cámara (gesto del usuario: necesario en iOS) ---
+    ui.comenzar.addEventListener('click', async () => {
+      ui.comenzar.disabled = true;
+      ui.inicio.classList.add('oculto');
+      ui.cargando.classList.remove('oculto');
+      try {
+        await escena.systems['mindar-image-system'].start();
+      } catch (e) {
+        console.error(e);
+      }
+    });
+    escena.addEventListener('arReady', () => {
+      ui.cargando.classList.add('oculto');
+      ui.escaneo.classList.remove('oculto');
+      ui.barra.classList.remove('oculto');
+      ui.info.classList.remove('oculto');
+    });
+    escena.addEventListener('arError', () => {
+      ui.cargando.classList.add('oculto');
+      ui.inicio.classList.remove('oculto');
+      ui.comenzar.disabled = false; ui.comenzar.textContent = 'Reintentar';
+      aviso('No se pudo abrir la cámara. Revisa los permisos del navegador.', 6000);
+    });
+
+    // --- Detección del logotipo ---
+    let primeraVez = true;
+    const objetivo = $('#objetivo');
+    objetivo.addEventListener('targetFound', () => {
+      ui.escaneo.classList.add('oculto');
+      aparicion.removeAttribute('animation__entrada');
+      aparicion.setAttribute('animation__entrada', { property: 'scale', from: '0.001 0.001 0.001', to: '1 1 1', dur: 900, easing: 'easeOutElastic', elasticity: 500 });
+      if (navigator.vibrate) navigator.vibrate(30);
+      if (primeraVez) {
+        primeraVez = false;
+        ui.ayuda.classList.remove('oculto');
+        setTimeout(() => { ui.ayuda.style.opacity = 0; setTimeout(() => ui.ayuda.classList.add('oculto'), 500); }, 4500);
+      }
+    });
+    objetivo.addEventListener('targetLost', () => {
+      ui.escaneo.classList.remove('oculto');
+      aparicion.removeAttribute('animation__entrada');
+      aparicion.object3D.scale.setScalar(0.001);
+    });
+
+    // --- Modo mesa / pared ---
+    const MODOS = {
+      // Logo tumbado sobre la mesa: el busto "se levanta" del papel
+      mesa:  { rot: '90 0 0', pos: '0 -0.35 0', sombra: true,  icono: 'M2 18l5-8h15l-5 8z', texto: 'Mesa' },
+      // Logo en la pared, un cartel o una pantalla: el busto sale hacia ti
+      pared: { rot: '0 0 0',  pos: '0 -0.43 0.15', sombra: false, icono: 'M6 2h12v20H6z', texto: 'Pared' }
+    };
+    let modo = leer('carmen-ra-modo') === 'pared' ? 'pared' : 'mesa';
+    function aplicarModo() {
+      const m = MODOS[modo];
+      pivote.setAttribute('rotation', m.rot);
+      pivote.setAttribute('position', m.pos);
+      sombra.object3D.visible = m.sombra;
+      $('#icono-modo').setAttribute('d', m.icono);
+      $('#txt-modo').textContent = m.texto;
+    }
+    aplicarModo();
+    $('#btn-modo').addEventListener('click', () => {
+      modo = modo === 'mesa' ? 'pared' : 'mesa';
+      guardar('carmen-ra-modo', modo); aplicarModo();
+      aviso(modo === 'mesa' ? 'Modo mesa: logotipo tumbado sobre una superficie' : 'Modo pared: logotipo en vertical (cartel o pantalla)', 2500);
+    });
+
+    // --- Giro automático ---
+    $('#btn-girar').addEventListener('click', e => {
+      const activa = !peanaEl.getAttribute('peana').activa;
+      peanaEl.setAttribute('peana', 'activa', activa);
+      e.currentTarget.classList.toggle('activo', activa);
+    });
+
+    // --- Reiniciar ---
+    $('#btn-reset').addEventListener('click', () => {
+      gestosEl.components.gestos.reiniciar();
+      peanaEl.object3D.rotation.y = 0;
+      peanaEl.setAttribute('peana', 'activa', false);
+      $('#btn-girar').classList.remove('activo');
+    });
+
+    // --- Paneles ---
+    const abrir = id => $(id).classList.remove('oculto');
+    document.querySelectorAll('.panel-fondo').forEach(p => p.addEventListener('click', e => {
+      if (e.target === p || e.target.hasAttribute('data-cerrar')) p.classList.add('oculto');
+    }));
+    ui.info.addEventListener('click', () => abrir('#panel-info'));
+
+    // --- Foto: combina el vídeo de la cámara con el render 3D ---
+    let blobFoto = null;
+    $('#btn-foto').addEventListener('click', () => {
+      const video = document.querySelector('video');
+      const lienzo3D = escena.canvas;
+      if (!video || !lienzo3D) return;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const W = window.innerWidth, H = window.innerHeight;
+      const c = document.createElement('canvas'); c.width = W * dpr; c.height = H * dpr;
+      const g = c.getContext('2d');
+      const dibuja = (fuente, r) => g.drawImage(fuente, r.left * dpr, r.top * dpr, r.width * dpr, r.height * dpr);
+      dibuja(video, video.getBoundingClientRect());
+      // Renderizamos justo antes de copiar (así no hace falta preserveDrawingBuffer, que penaliza el rendimiento)
+      escena.renderer.render(escena.object3D, escena.camera);
+      dibuja(lienzo3D, lienzo3D.getBoundingClientRect());
+      // Pie de foto
+      const h = 34 * dpr; g.fillStyle = 'rgba(15,62,87,.8)'; g.fillRect(0, c.height - h, c.width, h);
+      g.fillStyle = '#fff'; g.font = `${13 * dpr}px Inter, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.fillText('Carmen de Burgos · IES Carmen de Burgos Seguí', c.width / 2, c.height - h / 2);
+
+      const flash = $('#foto-flash'); flash.style.opacity = .85; setTimeout(() => flash.style.opacity = 0, 120);
+      c.toBlob(b => {
+        blobFoto = b;
+        const url = URL.createObjectURL(b);
+        $('#foto-img').src = url; $('#foto-descargar').href = url;
+        const archivo = new File([b], 'carmen-de-burgos-RA.jpg', { type: 'image/jpeg' });
+        $('#foto-compartir').classList.toggle('oculto', !(navigator.canShare && navigator.canShare({ files: [archivo] })));
+        abrir('#panel-foto');
+      }, 'image/jpeg', 0.9);
+    });
+    $('#foto-compartir').addEventListener('click', async () => {
+      if (!blobFoto) return;
+      try { await navigator.share({ files: [new File([blobFoto], 'carmen-de-burgos-RA.jpg', { type: 'image/jpeg' })], title: 'Carmen de Burgos en RA' }); } catch (e) {}
+    });
+
+    // Si la pestaña pasa a segundo plano, pausamos para ahorrar batería
+    document.addEventListener('visibilitychange', () => {
+      const sys = escena.systems['mindar-image-system'];
+      if (!sys || !sys.controller) return;
+      if (document.hidden) sys.pause(true); else sys.unpause();
+    });
+  </script>
+</body>
+</html>
