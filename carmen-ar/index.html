@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Colombine AR · Carmen de Burgos</title>
+  <script src="https://aframe.io/releases/1.7.1/aframe.min.js"></script>
+
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden;
+                 font-family: sans-serif; color: #fff; }
+
+    /* 🎬 Pantalla de inicio (mismo estilo que el hub) */
+    #start-overlay { position: fixed; inset: 0; z-index: 9999; background: #000;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 18px; padding: 24px; box-sizing: border-box; text-align: center; }
+    #start-overlay h1 { margin: 0; font-size: 1.7rem; font-weight: normal;
+      letter-spacing: 0.2em; text-transform: uppercase; }
+    #start-overlay p { margin: 0; font-size: 0.95rem; opacity: 0.6; max-width: 26rem; line-height: 1.5; }
+    .btn { padding: 14px 36px; font-size: 1.05rem; letter-spacing: 0.1em;
+      background: transparent; border: 2px solid #fff; color: #fff; border-radius: 4px;
+      cursor: pointer; text-decoration: none; }
+    .btn:active { background: rgba(255,255,255,0.2); }
+    .btn[disabled] { opacity: 0.35; }
+    .btn.small { padding: 9px 18px; font-size: 0.85rem; }
+    #status { font-size: 0.85rem; opacity: 0.55; min-height: 1.2em; }
+
+    /* 📱 Interfaz dentro de la sesión AR (DOM overlay) y del modo 3D */
+    #ar-ui { position: fixed; inset: 0; z-index: 10; display: none;
+      touch-action: none; user-select: none; -webkit-user-select: none; }
+    #ar-ui.on { display: block; }
+    #hint { position: absolute; left: 50%; bottom: 96px; transform: translateX(-50%);
+      width: max-content; max-width: calc(100% - 32px);
+      background: rgba(0,0,0,0.6); padding: 10px 16px; border-radius: 6px;
+      font-size: 0.95rem; text-align: center; line-height: 1.4; pointer-events: none; }
+    #bar { position: absolute; left: 0; right: 0; bottom: 24px;
+      display: flex; justify-content: center; gap: 10px; }
+    #bar .btn { background: rgba(0,0,0,0.55); }
+    #btn-replace { display: none; }
+  </style>
+
+  <script>
+  /* ============================================================
+     📐 AJUSTES
+  ============================================================ */
+  const CARMEN = {
+    alturaBusto: 0.72, // el modelo es un busto: altura (m) a escala 1
+    pedestal:    1.00, // altura de la columna sobre la que se apoya
+    escalaMin:  0.10,  // pinch mínimo (miniatura sobre la mesa)
+    escalaMax:  1.50
+  };
+
+  /* ============================================================
+     🧍 AJUSTAR MODELO: pies en el suelo y altura real
+     El GLB viene centrado en su origen (la mitad queda bajo el suelo)
+     y sin unidades fiables: lo medimos al cargar y lo corregimos.
+  ============================================================ */
+  AFRAME.registerComponent('fit-model', {
+    init: function () {
+      this.el.addEventListener('model-loaded', () => {
+        const obj = this.el.getObject3D('mesh');
+        const box = new THREE.Box3().setFromObject(obj);
+        const size = box.getSize(new THREE.Vector3());
+        const center = box.getCenter(new THREE.Vector3());
+        const s = CARMEN.alturaBusto / size.y;
+        obj.scale.setScalar(s);
+        obj.position.set(-center.x * s, -box.min.y * s, -center.z * s);
+        setPedestal(true);
+
+        // En AR la luz la pone la habitación real: el emisivo integrado del
+        // modelo (1,1,1) la dejaba "plana". Lo bajamos para que reciba luz.
+        obj.traverse(n => {
+          if (n.isMesh && n.material) {
+            n.material.emissiveIntensity = 0.35;
+            n.material.needsUpdate = true;
+          }
+        });
+        document.querySelector('a-scene').emit('carmen-ready');
+      });
+    }
+  });
+
+  /* ============================================================
+     🏛️ PEDESTAL con placa (texto en canvas: sin fuentes externas)
+  ============================================================ */
+  function setPedestal(on) {
+    const h = on ? CARMEN.pedestal : 0;
+    document.getElementById('bust').object3D.position.y = h;
+    document.getElementById('pedestal').object3D.visible = on;
+    const b = document.getElementById('btn-ped');
+    if (b) b.textContent = on ? '▣ Sin pedestal' : '▣ Con pedestal';
+  }
+
+  AFRAME.registerComponent('plaque', {
+    init: function () {
+      const c = document.createElement('canvas'); c.width = 512; c.height = 256;
+      const g = c.getContext('2d');
+      g.fillStyle = '#2b2419'; g.fillRect(0, 0, 512, 256);
+      g.strokeStyle = '#c9a85a'; g.lineWidth = 8; g.strokeRect(14, 14, 484, 228);
+      g.fillStyle = '#e8d49a'; g.textAlign = 'center';
+      g.font = 'bold 42px Georgia, serif'; g.fillText('CARMEN DE BURGOS', 256, 100);
+      g.font = 'italic 40px Georgia, serif'; g.fillText('«Colombine»', 256, 158);
+      g.font = '30px Georgia, serif'; g.fillText('1867 – 1932', 256, 208);
+      const tex = new THREE.CanvasTexture(c);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      this.el.addEventListener('loaded', () => {
+        const m = this.el.getObject3D('mesh');
+        m.material = new THREE.MeshBasicMaterial({ map: tex });
+      });
+    }
+  });
+
+  /* ============================================================
+     🎯 HIT-TEST PROPIO (ligero)
+     Retícula en el centro de la vista sobre suelo/mesa detectado.
+     Tocar la pantalla (móvil) o gatillo (Quest 3) = colocar a Carmen.
+  ============================================================ */
+  AFRAME.registerComponent('ar-place', {
+    schema: { target: { type: 'selector' }, reticle: { type: 'selector' } },
+
+    init: function () {
+      this.hitSource = null;
+      this.placed = false;
+      this.hasHit = false;
+      this.camPos = new THREE.Vector3();
+      this.tmpMat = new THREE.Matrix4();
+
+      this.onSelect = this.onSelect.bind(this);
+      const scene = this.el;
+
+      scene.addEventListener('enter-vr', () => {
+        if (!scene.is('ar-mode')) return;
+        const session = scene.renderer.xr.getSession();
+        document.body.classList.add('in-ar');
+        UI.show();
+        UI.hint('Mueve el móvil despacio apuntando al suelo…');
+        this.reset();
+
+        session.requestReferenceSpace('viewer').then(space =>
+          session.requestHitTestSource({ space })
+        ).then(src => { this.hitSource = src; })
+         .catch(err => {
+           console.warn('[ar-place] hit-test no disponible', err);
+           UI.hint('Este dispositivo no detecta superficies. Toca para colocar a Carmen delante de ti.');
+         });
+
+        session.addEventListener('select', this.onSelect);
+      });
+
+      scene.addEventListener('exit-vr', () => {
+        if (this.hitSource) { this.hitSource.cancel(); this.hitSource = null; }
+        document.body.classList.remove('in-ar');
+        UI.hide();
+        UI.backToStart();
+      });
+    },
+
+    reset: function () {
+      this.placed = false;
+      this.hasHit = false;
+      this.data.target.object3D.visible = false;
+      this.data.reticle.object3D.visible = false;
+      UI.setPlaced(false);
+    },
+
+    onSelect: function () {
+      if (this.placed) return;
+      const target = this.data.target.object3D;
+
+      if (this.hasHit) {
+        target.position.setFromMatrixPosition(this.data.reticle.object3D.matrix);
+      } else if (!this.hitSource) {
+        // Sin hit-test: 1,5 m delante de la cámara, 1,6 m por debajo de los ojos
+        const cam = this.el.camera;
+        const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(cam.getWorldQuaternion(new THREE.Quaternion()));
+        dir.y = 0; dir.normalize();
+        cam.getWorldPosition(this.camPos);
+        target.position.copy(this.camPos).addScaledVector(dir, 1.5);
+        target.position.y -= 1.6;
+      } else {
+        return; // hay hit-test pero aún no ha encontrado suelo
+      }
+
+      // Que Carmen mire hacia la persona
+      this.el.camera.getWorldPosition(this.camPos);
+      target.rotation.set(0, Math.atan2(this.camPos.x - target.position.x,
+                                        this.camPos.z - target.position.z), 0);
+      target.visible = true;
+      this.placed = true;
+      this.data.reticle.object3D.visible = false;
+      UI.setPlaced(true);
+    },
+
+    tick: function () {
+      if (!this.hitSource || this.placed) return;
+      const frame = this.el.frame;
+      const ref = this.el.renderer.xr.getReferenceSpace();
+      if (!frame || !ref) return;
+
+      const hits = frame.getHitTestResults(this.hitSource);
+      const reticle = this.data.reticle.object3D;
+      if (hits.length) {
+        const pose = hits[0].getPose(ref);
+        reticle.matrixAutoUpdate = false;
+        reticle.matrix.fromArray(pose.transform.matrix);
+        reticle.visible = true;
+        if (!this.hasHit) UI.hint('Toca la pantalla para colocar el busto de Carmen de Burgos');
+        this.hasHit = true;
+      } else {
+        reticle.visible = false;
+        this.hasHit = false;
+      }
+    }
+  });
+
+  /* ============================================================
+     ✋ GESTOS: 1 dedo = girar · 2 dedos = pellizco (escala) + giro
+     Funciona igual en AR (DOM overlay) y en el visor 3D.
+  ============================================================ */
+  AFRAME.registerComponent('touch-gestures', {
+    schema: { surface: { type: 'selector' } },
+
+    init: function () {
+      const el = this.el, surf = this.data.surface;
+      let last = null;      // estado del gesto anterior
+      let scale = 1;
+
+      const read = (t) => {
+        if (t.length === 1) return { n: 1, x: t[0].clientX };
+        const dx = t[1].clientX - t[0].clientX, dy = t[1].clientY - t[0].clientY;
+        return { n: 2, d: Math.hypot(dx, dy), a: Math.atan2(dy, dx) };
+      };
+
+      const onStart = (e) => { if (el.object3D.visible) last = read(e.touches); };
+      const onMove = (e) => {
+        if (!last || !el.object3D.visible || e.touches.length === 0) return;
+        e.preventDefault();
+        const now = read(e.touches);
+        if (now.n === 1 && last.n === 1) {
+          el.object3D.rotation.y += (now.x - last.x) * 0.01;
+        } else if (now.n === 2 && last.n === 2) {
+          scale = THREE.MathUtils.clamp(scale * (now.d / last.d), CARMEN.escalaMin, CARMEN.escalaMax);
+          el.object3D.scale.setScalar(scale);
+          el.object3D.rotation.y -= (now.a - last.a);
+        }
+        last = now;
+      };
+      const onEnd = (e) => { last = e.touches.length ? read(e.touches) : null; };
+
+      surf.addEventListener('touchstart', onStart, { passive: true });
+      surf.addEventListener('touchmove', onMove, { passive: false });
+      surf.addEventListener('touchend', onEnd);
+      surf.addEventListener('touchcancel', onEnd);
+
+      // Ratón (visor 3D en escritorio): arrastrar gira, rueda escala
+      let dragX = null;
+      surf.addEventListener('mousedown', e => { dragX = e.clientX; });
+      window.addEventListener('mouseup', () => { dragX = null; });
+      surf.addEventListener('mousemove', e => {
+        if (dragX === null) return;
+        el.object3D.rotation.y += (e.clientX - dragX) * 0.01; dragX = e.clientX;
+      });
+      surf.addEventListener('wheel', e => {
+        e.preventDefault();
+        scale = THREE.MathUtils.clamp(scale * (e.deltaY < 0 ? 1.08 : 0.92), CARMEN.escalaMin, CARMEN.escalaMax);
+        el.object3D.scale.setScalar(scale);
+      }, { passive: false });
+
+      this.setScale = (s) => { scale = s; el.object3D.scale.setScalar(s); };
+    }
+  });
+
+  /* ============================================================
+     🎮 MANDOS QUEST 3: joystick izq/der = girar · arriba/abajo = escala
+  ============================================================ */
+  AFRAME.registerComponent('thumb-gestures', {
+    schema: { target: { type: 'selector' } },
+    init: function () {
+      this.axis = { x: 0, y: 0 };
+      this.el.addEventListener('thumbstickmoved', e => {
+        this.axis.x = e.detail.x; this.axis.y = e.detail.y;
+      });
+    },
+    tick: function (t, dt) {
+      const obj = this.data.target.object3D;
+      if (!obj.visible || !dt) return;
+      const k = dt / 1000;
+      if (Math.abs(this.axis.x) > 0.2) obj.rotation.y -= this.axis.x * 2 * k;
+      if (Math.abs(this.axis.y) > 0.2) {
+        const s = THREE.MathUtils.clamp(obj.scale.x * (1 - this.axis.y * 1.2 * k),
+                                        CARMEN.escalaMin, CARMEN.escalaMax);
+        obj.scale.setScalar(s);
+        const g = this.data.target.components['touch-gestures'];
+        if (g) g.setScale(s);
+      }
+    }
+  });
+  </script>
+</head>
+
+<body>
+
+<!-- 🎬 PANTALLA DE INICIO -->
+<div id="start-overlay">
+  <h1>Carmen de Burgos</h1>
+  <p>«Colombine» en tu espacio. Apunta al suelo (o a una mesa), toca para colocar su busto y usa los dedos para girarlo o cambiar su tamaño.</p>
+  <button id="btn-ar" class="btn" disabled>Cargando…</button>
+  <button id="btn-3d" class="btn small" style="display:none">Ver en 3D (sin cámara)</button>
+  <div id="status"></div>
+  <a id="btn-back" href="#" class="btn small" style="display:none">← Volver a Colombine</a>
+</div>
+
+<!-- 📱 INTERFAZ AR / 3D -->
+<div id="ar-ui">
+  <div id="hint"></div>
+  <div id="bar">
+    <button id="btn-replace" class="btn small">⟲ Recolocar</button>
+    <button id="btn-ped"     class="btn small">▣ Sin pedestal</button>
+    <button id="btn-reset"   class="btn small">1:1</button>
+    <button id="btn-exit"    class="btn small">✕ Salir</button>
+  </div>
+</div>
+
+<a-scene
+  xr-mode-ui="enabled: false"
+  webxr="optionalFeatures: hit-test, local-floor, dom-overlay; overlayElement: #ar-ui"
+  renderer="antialias: true; colorManagement: true; maxCanvasWidth: 1600; maxCanvasHeight: 1600"
+  gltf-model="dracoDecoderPath: https://www.gstatic.com/draco/versioned/decoders/1.5.7/"
+  ar-place="target: #carmen; reticle: #reticle"
+  loading-screen="dotsColor: #ffffff; backgroundColor: #000000"
+  device-orientation-permission-ui="enabled: false">
+
+  <a-assets timeout="30000">
+    <a-asset-item id="carmen-glb" src="carmen_burgos_opt.glb"></a-asset-item>
+  </a-assets>
+
+  <!-- 🎮 Cámara y mandos (los mandos solo aparecen en Quest) -->
+  <a-entity id="rig">
+    <a-entity id="cam" camera position="0 1.6 0" look-controls="enabled: false"></a-entity>
+    <a-entity meta-touch-controls="hand: left"  thumb-gestures="target: #carmen"></a-entity>
+    <a-entity meta-touch-controls="hand: right" thumb-gestures="target: #carmen"></a-entity>
+  </a-entity>
+
+  <!-- 💡 Solo 2 luces (regla de rendimiento del proyecto) -->
+  <a-entity light="type: hemisphere; color: #fffaf0; groundColor: #7a6a55; intensity: 1.4"></a-entity>
+  <a-entity light="type: directional; color: #ffffff; intensity: 1.2" position="1.5 3 2"></a-entity>
+
+  <!-- 🎯 Retícula -->
+  <a-entity id="reticle" visible="false">
+    <a-ring radius-inner="0.09" radius-outer="0.12" rotation="-90 0 0"
+            material="shader: flat; color: #F0E68C; opacity: 0.9; transparent: true"></a-ring>
+    <a-circle radius="0.02" rotation="-90 0 0" material="shader: flat; color: #F0E68C"></a-circle>
+  </a-entity>
+
+  <!-- 🧍 CARMEN DE BURGOS -->
+  <a-entity id="carmen" visible="false" touch-gestures="surface: #ar-ui">
+    <!-- Columna (1 m) + placa. Se puede quitar para ponerla sobre una mesa -->
+    <a-entity id="pedestal">
+      <a-box width="0.46" depth="0.46" height="0.08" position="0 0.04 0" material="color: #cfc6b4; roughness: 0.9"></a-box>
+      <a-box width="0.38" depth="0.38" height="0.84" position="0 0.50 0" material="color: #ddd5c4; roughness: 0.9"></a-box>
+      <a-box width="0.46" depth="0.46" height="0.08" position="0 0.96 0" material="color: #cfc6b4; roughness: 0.9"></a-box>
+      <a-plane plaque width="0.30" height="0.15" position="0 0.62 0.191"></a-plane>
+    </a-entity>
+    <a-entity id="bust" gltf-model="#carmen-glb" fit-model></a-entity>
+    <!-- sombra de contacto falsa: ancla el modelo al suelo sin coste de sombras -->
+    <a-circle id="blob" radius="0.40" rotation="-90 0 0" position="0 0.003 0"
+              material="shader: flat; color: #000; transparent: true; opacity: 0.35; depthWrite: false"></a-circle>
+  </a-entity>
+
+  <!-- 🟫 Suelo para el visor 3D (se oculta en AR) -->
+  <a-entity id="floor3d" visible="false">
+    <a-plane rotation="-90 0 0" width="12" height="12" material="color: #ba9652; roughness: 1"></a-plane>
+    <a-sky color="#b28f50"></a-sky>
+  </a-entity>
+</a-scene>
+
+<script>
+/* ============================================================
+   🧭 FLUJO DE LA INTERFAZ
+============================================================ */
+const scene   = document.querySelector('a-scene');
+const start   = document.getElementById('start-overlay');
+const btnAR   = document.getElementById('btn-ar');
+const btn3D   = document.getElementById('btn-3d');
+const status  = document.getElementById('status');
+const arUI    = document.getElementById('ar-ui');
+const hintEl  = document.getElementById('hint');
+const carmen  = document.getElementById('carmen');
+let mode3D = false;
+
+const UI = {
+  show() { arUI.classList.add('on'); },
+  hide() { arUI.classList.remove('on'); },
+  hint(t) { hintEl.textContent = t; hintEl.style.display = t ? 'block' : 'none'; },
+  setPlaced(p) {
+    document.getElementById('btn-replace').style.display = p && !mode3D ? 'inline-block' : 'none';
+    if (p) {
+      UI.hint('1 dedo: girar · 2 dedos: acercar/alejar para cambiar el tamaño');
+      setTimeout(() => { if (hintEl.textContent.startsWith('1 dedo')) UI.hint(''); }, 5000);
+    }
+  },
+  backToStart() { start.style.display = 'flex'; }
+};
+
+// Los botones del overlay no deben contar como "tocar para colocar"
+arUI.querySelectorAll('button').forEach(b =>
+  b.addEventListener('beforexrselect', e => e.preventDefault()));
+// Una vez colocada, los gestos tampoco deben disparar "select"
+arUI.addEventListener('beforexrselect', e => {
+  if (scene.components['ar-place'].placed) e.preventDefault();
+});
+
+// ¿Soporta AR este dispositivo?
+let arSupported = false;
+const arCheck = (navigator.xr && navigator.xr.isSessionSupported)
+  ? navigator.xr.isSessionSupported('immersive-ar').catch(() => false)
+  : Promise.resolve(false);
+
+function ready() {
+  arCheck.then(ok => {
+    arSupported = ok;
+    btn3D.style.display = 'inline-block';
+    if (ok) {
+      btnAR.disabled = false;
+      btnAR.textContent = '▶ ENTRAR EN AR';
+      status.textContent = '';
+    } else {
+      btnAR.disabled = true;
+      btnAR.textContent = 'AR no disponible';
+      status.textContent = 'La AR necesita Chrome en Android o el navegador de Meta Quest 3 (por HTTPS). En iPhone puedes usar el visor 3D.';
+    }
+  });
+}
+if (carmen.querySelector('[gltf-model]').getObject3D('mesh')) ready();
+else scene.addEventListener('carmen-ready', ready, { once: true });
+
+// ← Volver: a la página de Colombine desde la que se abrió (si existe)
+const COLOMBINE_URL = '../';  // portada de Proyecto Colombine
+const back = document.getElementById('btn-back');
+const backUrl = COLOMBINE_URL || (document.referrer && new URL(document.referrer).origin === location.origin ? document.referrer : '');
+if (backUrl) { back.href = backUrl; back.style.display = 'inline-block'; }
+
+btnAR.addEventListener('click', () => {
+  mode3D = false;
+  document.getElementById('floor3d').object3D.visible = false;
+  start.style.display = 'none';
+  scene.enterAR().catch(err => {
+    start.style.display = 'flex';
+    status.textContent = 'No se pudo iniciar la AR: ' + err.message;
+  });
+});
+
+btn3D.addEventListener('click', () => {
+  mode3D = true;
+  start.style.display = 'none';
+  document.getElementById('floor3d').object3D.visible = true;
+  const cam = document.getElementById('cam').object3D;
+  cam.position.set(0, 1.25, 2.3);
+  cam.rotation.set(-0.04, 0, 0);
+  const c = carmen.object3D;
+  c.position.set(0, 0, 0); c.rotation.set(0, 0, 0);
+  carmen.components['touch-gestures'].setScale(1);
+  c.visible = true;
+  UI.show();
+  UI.setPlaced(true);
+  UI.hint(matchMedia('(pointer: fine)').matches
+    ? 'Arrastra para girar · rueda del ratón para cambiar el tamaño'
+    : '1 dedo: girar · 2 dedos: cambiar el tamaño');
+  setTimeout(() => UI.hint(''), 6000);
+});
+
+document.getElementById('btn-replace').addEventListener('click', () => {
+  scene.components['ar-place'].reset();
+  UI.hint('Apunta al suelo y toca para volver a colocarla');
+});
+document.getElementById('btn-ped').addEventListener('click', () => {
+  setPedestal(!document.getElementById('pedestal').object3D.visible);
+});
+document.getElementById('btn-reset').addEventListener('click', () => {
+  carmen.components['touch-gestures'].setScale(1);
+});
+document.getElementById('btn-exit').addEventListener('click', () => {
+  if (scene.is('ar-mode')) { scene.exitVR(); return; }
+  UI.hide(); carmen.object3D.visible = false;
+  document.getElementById('floor3d').object3D.visible = false;
+  UI.backToStart();
+});
+</script>
+
+</body>
+</html>
