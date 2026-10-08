@@ -306,7 +306,7 @@
     loading-screen="enabled: false">
 
     <a-assets timeout="30000">
-      <a-asset-item id="modelo-carmen" src="assets/carmen-burgos.glb"></a-asset-item>
+      <a-asset-item id="modelo-carmen" src="assets/carmen-burgos.glb?v=2"></a-asset-item>
     </a-assets>
 
     <a-camera position="0 0 0" look-controls="enabled: false" cursor="rayOrigin: mouse" raycaster="objects: .clickable"></a-camera>
@@ -326,8 +326,8 @@
           <a-entity id="sombra" sombra-suave scale="0.75 0.75 0.75" position="0 0.002 0"></a-entity>
           <a-entity id="peana" peana>
             <a-entity id="aparicion" scale="0.001 0.001 0.001">
-              <!-- El GLB mide ~1,9 u de alto con el origen en su centro: escalado a 0,45 (≈ media altura del logo) y elevado 0,95×0,45 para que la base toque el papel -->
-              <a-entity id="carmen" gltf-model="#modelo-carmen" scale="0.45 0.45 0.45" position="0 0.428 0"></a-entity>
+              <!-- El GLB (busto Meshy, v2) mide ~0,15 u de alto con el origen en la base: escalado a 5,7 (≈ 0,86 u, media altura del logo) y sin elevar, porque la base ya toca el papel -->
+              <a-entity id="carmen" gltf-model="#modelo-carmen" scale="5.7 5.7 5.7" position="0 0 0"></a-entity>
             </a-entity>
           </a-entity>
         </a-entity>
